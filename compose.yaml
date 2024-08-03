@@ -19,13 +19,14 @@ services:
     labels:
       - traefik.enable=true
       - traefik.http.routers.mydashboard.rule=Host(`traefik.mleczko.dev`)
-      - traefik.http.routers.mydashboard.priority=100
+      - traefik.http.routers.mydashboard.priority=1000
       - traefik.http.routers.mydashboard.service=api@internal
       - traefik.http.routers.mydashboard.middlewares=myauth
       - traefik.http.middlewares.myauth.basicauth.users=traefik_dashboard:$$apr1$$WDcJUsnl$$E5lccC1C9kbO7i2NPg8mO.
 
   caddy:
     image: caddy:latest
+    restart: unless-stopped
     volumes:
       - ./.docker/caddy/Caddyfile:/etc/caddy/Caddyfile
       - ./.docker/caddy/sites:/etc/caddy/sites
@@ -38,12 +39,25 @@ services:
       - 80
     labels:
       - traefik.enable=true
-      - traefik.http.routers.caddy.rule=HostRegexp(`.+\.mleczko\.dev`)
+      - traefik.http.routers.caddy.rule=HostRegexp(`.+\.mleczko\.dev`) || Host(`porin.pl`) || Host(`marionetkamody.pl`) || Host(`mlecznarodzina.com`)
 
   php83:
     build:
       dockerfile: .docker/php/Dockerfile
       context: .
+      target: php83
+    restart: unless-stopped
+    volumes:
+      - ./domains:/domains
+    networks:
+      mikrus:
+      default:
+
+  php74:
+    build:
+      dockerfile: .docker/php/Dockerfile
+      context: .
+      target: php74
     restart: unless-stopped
     volumes:
       - ./domains:/domains

@@ -5,6 +5,11 @@
        format console
        output stdout
     }
+
+   	servers {
+   		trusted_proxies static private_ranges 135.181.95.85
+   	}
+
 }
 
 import sites/*

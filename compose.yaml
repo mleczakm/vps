@@ -1,0 +1,56 @@
+services:
+  traefik:
+    image: "traefik:v3.1.1"
+    restart: unless-stopped
+    command:
+      - "--api.insecure=true"
+      - "--api.dashboard=true"
+      - "--log.level=INFO"
+      - "--providers.docker=true"
+      - "--providers.docker.network=mikrus"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "20115:80"
+    networks:
+      mikrus:
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mydashboard.rule=Host(`traefik.mleczko.dev`)
+      - traefik.http.routers.mydashboard.priority=100
+      - traefik.http.routers.mydashboard.service=api@internal
+      - traefik.http.routers.mydashboard.middlewares=myauth
+      - traefik.http.middlewares.myauth.basicauth.users=traefik_dashboard:$$apr1$$WDcJUsnl$$E5lccC1C9kbO7i2NPg8mO.
+
+  caddy:
+    image: caddy:latest
+    volumes:
+      - ./.docker/caddy/Caddyfile:/etc/caddy/Caddyfile
+      - ./.docker/caddy/sites:/etc/caddy/sites
+      - ./.docker/caddy/config:/etc/caddy/config
+      - ./domains:/domains
+    networks:
+      mikrus:
+      default:
+    expose:
+      - 80
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.caddy.rule=HostRegexp(`.+\.mleczko\.dev`)
+
+  php83:
+    build:
+      dockerfile: .docker/php/Dockerfile
+      context: .
+    restart: unless-stopped
+    volumes:
+      - ./domains:/domains
+    networks:
+      mikrus:
+      default:
+
+networks:
+  mikrus:
+    external: true

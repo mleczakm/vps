@@ -1,0 +1,10 @@
+{
+    auto_https off
+
+    log default {
+       format console
+       output stdout
+    }
+}
+
+import sites/*

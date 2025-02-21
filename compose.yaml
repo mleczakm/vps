@@ -10,8 +10,10 @@ services:
       - "--providers.docker.network=mikrus"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
     ports:
-      - "20115:80"
+      - "80:80"
+      - "443:443"
     networks:
       mikrus:
     volumes:
@@ -22,6 +24,8 @@ services:
       - traefik.http.routers.mydashboard.priority=1000
       - traefik.http.routers.mydashboard.service=api@internal
       - traefik.http.routers.mydashboard.middlewares=myauth
+      - traefik.http.routers.mydashboard.entrypoints=websecure
+      - traefik.http.routers.mydashboard.tls=true
       - traefik.http.middlewares.myauth.basicauth.users=traefik_dashboard:$$apr1$$WDcJUsnl$$E5lccC1C9kbO7i2NPg8mO.
 
   caddy:
@@ -40,6 +44,9 @@ services:
     labels:
       - traefik.enable=true
       - traefik.http.routers.caddy.rule=HostRegexp(`.+\.mleczko\.dev`) || Host(`porin.pl`) || Host(`www.porin.pl`) || Host(`marionetkamody.pl`) || Host(`mlecznarodzina.com`)
+      - traefik.http.routers.caddySecure.rule=HostRegexp(`.+\.mleczko\.dev`) || Host(`porin.pl`) || Host(`www.porin.pl`) || Host(`marionetkamody.pl`) || Host(`mlecznarodzina.com`)
+      - traefik.http.routers.caddySecure.entrypoints=websecure
+      - traefik.http.routers.caddySecure.tls=true
 
   php83:
     build:

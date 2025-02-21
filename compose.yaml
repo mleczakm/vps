@@ -39,7 +39,7 @@ services:
       - 80
     labels:
       - traefik.enable=true
-      - traefik.http.routers.caddy.rule=HostRegexp(`.+\.mleczko\.dev`) || Host(`porin.pl`) || Host(`marionetkamody.pl`) || Host(`mlecznarodzina.com`)
+      - traefik.http.routers.caddy.rule=HostRegexp(`.+\.mleczko\.dev`) || Host(`porin.pl`) || Host(`www.porin.pl`) || Host(`marionetkamody.pl`) || Host(`mlecznarodzina.com`)
 
   php83:
     build:
@@ -64,6 +64,15 @@ services:
     networks:
       mikrus:
       default:
+
+  sftp:
+    image: atmoz/sftp
+    restart: unless-stopped
+    command: adrian:$$1$$4SI.VeZo$$gY8AzHV4Hxr7TdWOMKWsx1:e:1001
+    ports:
+      - "30115:22"
+    volumes:
+      - ./domains/porin.pl:/home/adrian/porin.pl
 
 networks:
   mikrus:

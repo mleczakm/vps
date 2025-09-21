@@ -81,6 +81,48 @@ services:
     volumes:
       - ./domains/porin.pl:/home/adrian/porin.pl
 
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    networks:
+      mikrus:
+    environment:
+      WEBHOOK_URL: https://n8n.mleczko.dev
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.n8n.rule=Host(`n8n.mleczko.dev`)
+      - traefik.http.routers.n8n.entrypoints=websecure
+      - traefik.http.routers.n8n.priority=200
+      - traefik.http.routers.n8n.tls=true
+    volumes:
+      - ~/.n8n:/home/node/.n8n
+
+  kiddo:
+    image: $KIDDO_IMAGE
+    restart: unless-stopped
+    networks:
+      mikrus:
+      default:
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.kiddo.rule=Host(`warsztatowniasensoryczna.pl`) || Host(`skarbiec.mleczki.pl`)
+      - traefik.http.routers.kiddo.entrypoints=websecure
+      - traefik.http.routers.kiddo.tls=true
+      - autoheal.monitor.enable
+    env_file:
+      - .env
+    volumes:
+      - kiddo_cache:/var/cache/prod/pools/app
+  autoheal:
+    image: tmknight88/docker-autoheal:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
 networks:
   mikrus:
     external: true
+
+volumes:
+  kiddo_cache:
+  kiddo_data:

@@ -30,7 +30,7 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.MIKRUS_SSH_KEY }}" > ~/.ssh/id_rsa
-          ssh-keyscan -H "${{ secrets.MIKRUS_HOST }}" -p${{ secrets.MIKRUS_PORT }} >> ~/.ssh/known_hosts
+          ssh-keyscan -p "${{ secrets.MIKRUS_PORT }}" "${{ secrets.MIKRUS_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Run Ansible playbooks
         run: |

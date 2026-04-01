@@ -1,0 +1,39 @@
+name: Provision Mikrus Server
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  provision:
+    environment: stage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Ansible + dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          ansible-galaxy collection install -r ansible-collections-requirements.yml
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.MIKRUS_SSH_KEY }}" > ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.MIKRUS_HOST }}" -p{{ secrets.MIKRUS_PORT }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H "${{ secrets.MIKRUS_HOST }}" -p${{ secrets.MIKRUS_PORT }} >> ~/.ssh/known_hosts
+
+      - name: Run Ansible playbooks
+        run: |
+          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/base.yml \
+            -e "ansible_host=${{ secrets.MIKRUS_HOST }}" -e "ansible_port=${{ secrets.MIKRUS_PORT }}"

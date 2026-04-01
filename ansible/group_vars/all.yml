@@ -1,0 +1,24 @@
+ansible_python_interpreter: /usr/bin/python3
+deploy_dir: /opt/apps
+docker_users: ["root"]
+
+# Alpine OS specific
+alpine_packages:
+  - docker
+  - python3
+  - py3-pip
+  - py3-requests
+  - openssh-client
+
+# Network configuration
+network_name: mikrus
+external_network: true
+
+# Domain configuration
+domains_dir: /opt/apps/domains
+
+# Beszel monitoring
+beszel_agent_image: "henrygd/beszel-agent"
+beszel_agent_name: "beszel-agent"
+beszel_agent_volume: "beszel_agent_data"
+beszel_agent_listen: "45876"

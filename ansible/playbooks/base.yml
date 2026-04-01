@@ -1,0 +1,99 @@
+- hosts: mikrus
+  become: true
+  tasks:
+    # -------------------------
+    # Bootstrap: Docker on Alpine
+    # -------------------------
+    - name: Install Docker + Python on Alpine
+      become: true
+      community.general.apk:
+        name:
+          - docker
+          - python3
+          - py3-pip
+        state: present
+        update_cache: true
+      tags: [bootstrap]
+
+    - name: Install Docker SDK for Python (pip, break system packages)
+      become: true
+      ansible.builtin.pip:
+        name: docker
+        state: present
+        executable: pip3
+        break_system_packages: true
+      tags: [bootstrap]
+
+    - name: Ensure Docker service is started and enabled
+      become: true
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+      tags: [bootstrap]
+
+    - name: Ensure /etc/docker directory exists
+      become: true
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: "0755"
+      tags: [bootstrap]
+
+    - name: Configure Docker log rotation
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "live-restore": true,
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "1m",
+              "max-file": "3"
+            },
+            "log-level": "warn"
+          }
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart Docker
+      tags: [bootstrap]
+
+    - name: Apply Docker log config immediately (if changed)
+      ansible.builtin.meta: flush_handlers
+      tags: [bootstrap]
+
+    - name: Verify Docker daemon is reachable
+      become: true
+      ansible.builtin.command: docker info
+      register: docker_info
+      changed_when: false
+      failed_when: false
+      tags: [bootstrap]
+
+    - name: Reboot if Docker daemon not responding
+      become: true
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+      when: docker_info.rc != 0
+      tags: [bootstrap]
+
+    - name: Wait for SSH after reboot
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+      when: docker_info.rc != 0
+      tags: [bootstrap]
+
+    - name: Verify Docker daemon is reachable after reboot
+      become: true
+      ansible.builtin.command: docker info
+      register: docker_info_after
+      changed_when: false
+      tags: [bootstrap]
+
+    - name: Fail if Docker still not reachable
+      ansible.builtin.fail:
+        msg: "Docker daemon is not reachable (docker info failed) even after reboot."
+      when: docker_info_after.rc != 0
+      tags: [bootstrap]

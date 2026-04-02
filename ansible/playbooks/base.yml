@@ -1,5 +1,22 @@
 - hosts: mikrus
   become: true
+  gather_facts: false
+
+  pre_tasks:
+    # Install Python first without gathering facts (for Alpine Linux)
+    - name: Install Python 3 for Ansible (Alpine Linux)
+      become: true
+      ansible.builtin.raw: |
+        if ! command -v python3 >/dev/null 2>&1; then
+          apk update && apk add python3 py3-pip
+        fi
+      changed_when: false
+      tags: [bootstrap, python]
+
+    - name: Gather facts after Python installation
+      ansible.builtin.setup:
+      tags: [bootstrap, python]
+
   tasks:
     # -------------------------
     # Bootstrap: Docker on Alpine

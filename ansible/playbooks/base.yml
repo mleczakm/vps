@@ -28,7 +28,7 @@
           - docker
           - python3
           - py3-pip
-          - docker-compose
+          - docker-cli-compose
         state: present
         update_cache: true
       tags: [bootstrap]

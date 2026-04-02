@@ -114,3 +114,10 @@
         msg: "Docker daemon is not reachable (docker info failed) even after reboot."
       when: docker_info_after.rc != 0
       tags: [bootstrap]
+
+  handlers:
+    - name: Restart Docker
+      become: true
+      ansible.builtin.service:
+        name: docker
+        state: restarted

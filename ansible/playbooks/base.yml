@@ -17,6 +17,11 @@
       ansible.builtin.setup:
       tags: [bootstrap, python]
 
+    - name: Set Python interpreter for remaining tasks
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: /usr/bin/python3
+      tags: [bootstrap, python]
+
   tasks:
     # -------------------------
     # Bootstrap: Docker on Alpine

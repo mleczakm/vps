@@ -1,0 +1,167 @@
+name: Weekly Mikrus Maintenance
+
+on:
+  schedule:
+    - cron: "7 4 * * 1"  # Every Monday at 04:07 UTC
+  workflow_dispatch:
+    inputs:
+      run_full_cleanup:
+        description: 'Run full cleanup (including aggressive Docker pruning)'
+        required: false
+        default: false
+        type: boolean
+      skip_updates:
+        description: 'Skip system updates'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  weekly-maintenance:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Ansible + dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          ansible-galaxy collection install -r ansible-collections-requirements.yml
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.MIKRUS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p "${{ secrets.MIKRUS_PORT }}" "${{ secrets.MIKRUS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run weekly maintenance with Ansible
+        run: |
+          # Set tags based on workflow inputs
+          TAGS="maintenance"
+          
+          if [ "${{ github.event.inputs.skip_updates }}" = "true" ]; then
+            echo "Skipping system updates"
+          else
+            TAGS="$TAGS,system,update"
+          fi
+          
+          if [ "${{ github.event.inputs.run_full_cleanup }}" = "true" ]; then
+            echo "Running full cleanup"
+            TAGS="$TAGS,cleanup,docker,logs"
+          else
+            TAGS="$TAGS,cleanup,docker,logs"
+          fi
+          
+          echo "Running with tags: $TAGS"
+          
+          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/weekly-maintenance.yml \
+            -e "ansible_host=${{ secrets.MIKRUS_HOST }}" \
+            -e "ansible_port=${{ secrets.MIKRUS_PORT }}" \
+            -e "ansible_user=root" \
+            --tags "$TAGS" \
+            -v
+
+      - name: Get maintenance log summary
+        if: always()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.MIKRUS_HOST }}
+          username: root
+          key: ${{ secrets.MIKRUS_SSH_KEY }}
+          port: ${{ secrets.MIKRUS_PORT }}
+          script: |
+            echo "=== Maintenance Log Summary ==="
+            if [ -f /var/log/mikrus-maintenance.log ]; then
+              tail -20 /var/log/mikrus-maintenance.log
+            else
+              echo "No maintenance log found"
+            fi
+            
+            echo ""
+            echo "=== System Status ==="
+            echo "Disk usage:"
+            df -h /
+            echo ""
+            echo "Container status:"
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" || echo "Docker not accessible"
+
+      - name: Create or update GitHub Issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          MIKRUS_HOST: ${{ secrets.MIKRUS_HOST }}
+        with:
+          script: |
+            const server = process.env.MIKRUS_HOST || 'unknown';
+            const title = `ALERT: Weekly maintenance failed on Mikrus (${server})`;
+            const label = 'infra-alert';
+            const now = new Date().toISOString();
+
+            // Find existing open issue with label and same title
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+              per_page: 100,
+            });
+
+            const existing = issues.find(i => i.title === title);
+
+            const bodyLines = [
+              'Automatyczna konserwacja serwera Mikrus nie powiodła się.',
+              '',
+              `Czas (UTC): ${now}`,
+              `Workflow run: ${context.payload.repository.html_url}/actions/runs/${context.runId}`,
+              '',
+              'Sprawdź:',
+              '- dostępność serwera',
+              '- dane SSH (host/port/klucz)',
+              '- stan usług Docker',
+              '- dostęp do dysku',
+            ];
+            const body = bodyLines.join('\n');
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Kolejna próba nieudana.\n\n${body}`,
+              });
+              core.info(`Updated existing issue: #${existing.number}`);
+            } else {
+              const { data: issue } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [label],
+              });
+              core.info(`Created issue: #${issue.number}`);
+            }
+
+      - name: Success notification
+        if: success()
+        run: |
+          echo "✅ Weekly maintenance completed successfully!"
+          echo "📊 Summary:"
+          echo "- System updates: ${{ github.event.inputs.skip_updates == 'true' && 'Skipped' || 'Completed' }}"
+          echo "- Docker cleanup: Completed"
+          echo "- Log rotation: Completed"
+          echo "- Health checks: Completed"

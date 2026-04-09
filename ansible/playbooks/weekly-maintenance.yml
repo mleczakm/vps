@@ -1,0 +1,204 @@
+---
+- name: Weekly Mikrus Server Maintenance
+  hosts: mikrus
+  become: true
+  gather_facts: true
+
+  vars:
+    maintenance_log: "/var/log/mikrus-maintenance.log"
+    max_log_size: "10M"
+    log_retention_days: 30
+
+  tasks:
+    - name: Create maintenance log entry
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Starting weekly maintenance"
+        create: yes
+        state: present
+      tags: [maintenance]
+
+    # -------------------------
+    # System Updates
+    # -------------------------
+    - name: Update Alpine package index
+      community.general.apk:
+        update_cache: true
+      register: apk_update
+      tags: [system, update]
+
+    - name: Upgrade all Alpine packages
+      community.general.apk:
+        upgrade: true
+      register: apk_upgrade
+      tags: [system, update]
+
+    - name: Log system update results
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - System update: {{ apk_upgrade.changed | ternary('Packages upgraded', 'No updates available') }}"
+      tags: [maintenance, system]
+
+    # -------------------------
+    # Docker Cleanup
+    # -------------------------
+    - name: Prune Docker system (aggressive cleanup)
+      community.docker.docker_prune:
+        containers: true
+        images: true
+        networks: true
+        volumes: true
+        builder_cache: true
+        dangling_images: true
+      register: docker_prune
+      tags: [docker, cleanup]
+
+    - name: Log Docker cleanup results
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Docker cleanup: {{ docker_prune.changed | ternary('Cleaned up unused resources', 'No cleanup needed') }}"
+      tags: [maintenance, docker]
+
+    # -------------------------
+    # Log Management
+    # -------------------------
+    - name: Find large log files (>1MB)
+      ansible.builtin.find:
+        paths: /var/log
+        patterns: "*.log"
+        size: "1m"
+        file_type: file
+      register: large_logs
+      tags: [logs, cleanup]
+
+    - name: Truncate large log files
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ item.path }}"
+        force: yes
+        backup: yes
+      loop: "{{ large_logs.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: truncated_logs
+      when: large_logs.files | length > 0
+      tags: [logs, cleanup]
+
+    - name: Log file truncation results
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Log cleanup: {{ truncated_logs.results | selectattr('changed') | list | length }} files truncated"
+      tags: [maintenance, logs]
+
+    # -------------------------
+    # Container Health Check
+    # -------------------------
+    - name: Get all running containers
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+      register: container_status
+      loop:
+        - traefik
+        - caddy
+        - php83
+        - php74
+        - sftp
+        - n8n
+        - kiddo
+        - autoheal
+        - beszel-agent
+      failed_when: false
+      tags: [health, containers]
+
+    - name: Report container status
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Container {{ item.item }}: {{ item.container.State.Status | default('not found') }}"
+      loop: "{{ container_status.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [maintenance, health]
+
+    # -------------------------
+    # Disk Space Check
+    # -------------------------
+    - name: Check disk space
+      ansible.builtin.shell: df -h / | tail -1 | awk '{print $5}' | sed 's/%//'
+      register: disk_usage
+      changed_when: false
+      tags: [health, disk]
+
+    - name: Log disk usage
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Disk usage: {{ disk_usage.stdout }}%"
+      tags: [maintenance, disk]
+
+    - name: Alert on high disk usage (>80%)
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - WARNING: High disk usage detected ({{ disk_usage.stdout }}%)"
+      when: disk_usage.stdout | int > 80
+      tags: [maintenance, disk, alert]
+
+    # -------------------------
+    # Log Rotation
+    # -------------------------
+    - name: Rotate maintenance log if too large
+      ansible.builtin.stat:
+        path: "{{ maintenance_log }}"
+      register: maintenance_log_stat
+      tags: [logs, maintenance]
+
+    - name: Backup and truncate maintenance log
+      ansible.builtin.copy:
+        src: "{{ maintenance_log }}"
+        dest: "{{ maintenance_log }}.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+      when: maintenance_log_stat.stat.exists and maintenance_log_stat.stat.size > 10485760  # 10MB
+      tags: [logs, maintenance]
+
+    - name: Truncate maintenance log
+      ansible.builtin.copy:
+        content: "{{ ansible_date_time.iso8601 }} - Log rotated due to size\n"
+        dest: "{{ maintenance_log }}"
+      when: maintenance_log_stat.stat.exists and maintenance_log_stat.stat.size > 10485760
+      tags: [logs, maintenance]
+
+    - name: Clean old maintenance logs (older than 30 days)
+      ansible.builtin.find:
+        paths: "/var/log"
+        patterns: "mikrus-maintenance.log.*"
+        age: "{{ log_retention_days }}d"
+      register: old_logs
+      tags: [logs, cleanup]
+
+    - name: Remove old maintenance logs
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_logs.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      when: old_logs.files | length > 0
+      tags: [logs, cleanup]
+
+    # -------------------------
+    # Final Report
+    # -------------------------
+    - name: Create maintenance summary
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Weekly maintenance completed successfully"
+      tags: [maintenance]
+
+    - name: Display maintenance summary
+      ansible.builtin.debug:
+        msg: |
+          Weekly maintenance completed:
+          - System: {{ apk_upgrade.changed | ternary('Updated', 'No updates') }}
+          - Docker: {{ docker_prune.changed | ternary('Cleaned', 'No cleanup') }}
+          - Logs: {{ truncated_logs.results | selectattr('changed') | list | length }} files truncated
+          - Disk usage: {{ disk_usage.stdout }}%
+          - Container status logged
+      tags: [maintenance, summary]

@@ -107,7 +107,7 @@
         - autoheal
         - beszel-agent
       failed_when: false
-      tags: [health, containers]
+      tags: [maintenance, health, containers]
 
     - name: Report container status
       ansible.builtin.lineinfile:
@@ -125,7 +125,7 @@
       ansible.builtin.shell: df -h / | tail -1 | awk '{print $5}' | sed 's/%//'
       register: disk_usage
       changed_when: false
-      tags: [health, disk]
+      tags: [maintenance, health, disk]
 
     - name: Log disk usage
       ansible.builtin.lineinfile:

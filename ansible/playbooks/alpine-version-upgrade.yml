@@ -1,0 +1,197 @@
+---
+- name: Alpine OS Version Upgrade
+  hosts: mikrus
+  become: true
+  gather_facts: true
+
+  vars:
+    target_alpine_version: "3.23"
+    backup_before_upgrade: true
+    backup_dir: "/var/backups/alpine-upgrade-{{ ansible_date_time.iso8601 }}"
+    maintenance_log: "/var/log/mikrus-maintenance.log"
+
+  pre_tasks:
+    - name: Get current Alpine version
+      ansible.builtin.shell: cat /etc/alpine-release
+      register: current_alpine_version
+      changed_when: false
+
+    - name: Parse current Alpine version
+      ansible.builtin.set_fact:
+        current_version: "{{ current_alpine_version.stdout | regex_replace('^([0-9]+)\\.([0-9]+)\\.([0-9]+).*$', '\\1.\\2') }}"
+
+    - name: Check if upgrade is needed
+      ansible.builtin.set_fact:
+        upgrade_needed: "{{ current_version != target_alpine_version }}"
+
+    - name: Display version information
+      ansible.builtin.debug:
+        msg: |
+          Current Alpine version: {{ current_version }}
+          Target Alpine version: {{ target_alpine_version }}
+          Upgrade needed: {{ upgrade_needed }}
+
+    - name: Fail if no upgrade needed
+      ansible.builtin.fail:
+        msg: "Alpine OS is already at version {{ target_alpine_version }} or newer"
+      when: not upgrade_needed
+
+    - name: Create backup directory
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0755'
+      when: backup_before_upgrade
+
+    - name: Backup package list before upgrade
+      ansible.builtin.shell: apk info | sort > {{ backup_dir }}/packages-before.txt
+      when: backup_before_upgrade
+
+    - name: Backup critical system files
+      ansible.builtin.archive:
+        path:
+          - /etc/apk
+          - /etc/alpine-release
+          - /var/lib/apk
+        dest: "{{ backup_dir }}/alpine-system-backup.tar.gz"
+        format: gz
+      when: backup_before_upgrade
+
+    - name: Log upgrade start
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Starting Alpine OS upgrade from {{ current_version }} to {{ target_alpine_version }}"
+        create: yes
+
+  tasks:
+    - name: Update repositories to latest stable
+      ansible.builtin.lineinfile:
+        path: /etc/apk/repositories
+        regexp: '^#?http.*alpine.*v[0-9]+\.[0-9]+.*'
+        line: 'https://dl-cdn.alpinelinux.org/alpine/latest-stable/main'
+        backup: yes
+      register: repo_update
+
+    - name: Add community repository for latest stable
+      ansible.builtin.lineinfile:
+        path: /etc/apk/repositories
+        line: 'https://dl-cdn.alpinelinux.org/alpine/latest-stable/community'
+        create: yes
+      when: repo_update.changed
+
+    - name: Update package index with new repositories
+      community.general.apk:
+        update_cache: true
+      register: apk_update
+
+    - name: Upgrade apk package manager first
+      community.general.apk:
+        name:
+          - apk-tools
+        state: latest
+      register: apk_tools_upgrade
+
+    - name: Perform full system upgrade
+      community.general.apk:
+        upgrade: true
+      register: system_upgrade
+
+    - name: Fix broken packages if any
+      community.general.apk:
+        name: "@world"
+        state: latest
+        fix_dependencies: true
+      when: system_upgrade.changed
+      register: fix_packages
+
+    - name: Verify Alpine version after upgrade
+      ansible.builtin.shell: cat /etc/alpine-release
+      register: new_alpine_version
+      changed_when: false
+
+    - name: Parse new Alpine version
+      ansible.builtin.set_fact:
+        new_version: "{{ new_alpine_version.stdout | regex_replace('^([0-9]+)\\.([0-9]+)\\.([0-9]+).*$', '\\1.\\2') }}"
+
+    - name: Log upgrade results
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Alpine OS upgrade: {{ current_version }} -> {{ new_version }} {{ (new_version == target_alpine_version) | ternary('SUCCESS', 'PARTIAL') }}"
+
+    - name: Display upgrade results
+      ansible.builtin.debug:
+        msg: |
+          Alpine OS upgrade completed:
+          - From version: {{ current_version }}
+          - To version: {{ new_version }}
+          - Target version: {{ target_alpine_version }}
+          - Status: {{ (new_version == target_alpine_version) | ternary('SUCCESS', 'PARTIAL UPGRADE') }}
+          - Packages upgraded: {{ system_upgrade.changed }}
+
+    - name: Check if reboot is needed
+      ansible.builtin.shell: |
+        if [ -f /var/run/reboot-required ]; then
+          echo "yes"
+        else
+          echo "no"
+        fi
+      register: reboot_needed
+      changed_when: false
+
+    - name: Reboot system if required
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+      when: reboot_needed.stdout == "yes" or system_upgrade.changed
+
+    - name: Wait for SSH after reboot
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+      when: reboot_needed.stdout == "yes" or system_upgrade.changed
+
+    - name: Verify system after reboot
+      ansible.builtin.shell: |
+        echo "=== System Status ==="
+        cat /etc/alpine-release
+        echo "=== Docker Status ==="
+        docker info 2>/dev/null || echo "Docker not running"
+        echo "=== Container Status ==="
+        docker ps --format "table {{.Names}}\t{{.Status}}" 2>/dev/null || echo "No containers running"
+      register: post_reboot_status
+
+    - name: Display post-reboot status
+      ansible.builtin.debug:
+        msg: "{{ post_reboot_status.stdout_lines }}"
+
+  post_tasks:
+    - name: Backup package list after upgrade
+      ansible.builtin.shell: apk info | sort > {{ backup_dir }}/packages-after.txt
+      when: backup_before_upgrade
+
+    - name: Create upgrade summary
+      ansible.builtin.copy:
+        dest: "{{ backup_dir }}/upgrade-summary.txt"
+        content: |
+          Alpine OS Upgrade Summary
+          =========================
+          Date: {{ ansible_date_time.iso8601 }}
+          From version: {{ current_version }}
+          To version: {{ new_version }}
+          Target version: {{ target_alpine_version }}
+          Status: {{ (new_version == target_alpine_version) | ternary('SUCCESS', 'PARTIAL') }}
+          Packages upgraded: {{ system_upgrade.changed }}
+          Reboot performed: {{ (reboot_needed.stdout == "yes" or system_upgrade.changed) | ternary('yes', 'no') }}
+          
+          Backup location: {{ backup_dir }}
+      when: backup_before_upgrade
+
+    - name: Log upgrade completion
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Alpine OS upgrade completed successfully ({{ backup_dir }})"
+
+    - name: Final verification
+      ansible.builtin.assert:
+        that:
+          - new_version == target_alpine_version
+        fail_msg: "Alpine OS upgrade incomplete. Expected version {{ target_alpine_version }}, got {{ new_version }}"
+        success_msg: "Alpine OS successfully upgraded to {{ target_alpine_version }}"

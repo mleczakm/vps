@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      upgrade_alpine:
+        description: 'Upgrade Alpine OS to latest stable version'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   weekly-maintenance:
@@ -53,6 +58,7 @@ jobs:
         run: |
           # Set tags based on workflow inputs
           TAGS="maintenance"
+          EXTRA_VARS=""
           
           if [ "${{ github.event.inputs.skip_updates }}" = "true" ]; then
             echo "Skipping system updates"
@@ -67,12 +73,20 @@ jobs:
             TAGS="$TAGS,cleanup,docker,logs"
           fi
           
+          if [ "${{ github.event.inputs.upgrade_alpine }}" = "true" ]; then
+            echo "Enabling Alpine OS upgrade"
+            EXTRA_VARS="$EXTRA_VARS -e 'auto_upgrade_alpine=true'"
+            TAGS="$TAGS,version,upgrade"
+          fi
+          
           echo "Running with tags: $TAGS"
+          echo "Extra vars: $EXTRA_VARS"
           
           ansible-playbook -i ansible/inventory/hosts.ini ansible/playbooks/weekly-maintenance.yml \
             -e "ansible_host=${{ secrets.MIKRUS_HOST }}" \
             -e "ansible_port=${{ secrets.MIKRUS_PORT }}" \
             -e "ansible_user=root" \
+            $EXTRA_VARS \
             --tags "$TAGS" \
             -v
 
@@ -162,6 +176,7 @@ jobs:
           echo "✅ Weekly maintenance completed successfully!"
           echo "📊 Summary:"
           echo "- System updates: ${{ github.event.inputs.skip_updates == 'true' && 'Skipped' || 'Completed' }}"
+          echo "- Alpine OS upgrade: ${{ github.event.inputs.upgrade_alpine == 'true' && 'Performed' || 'Not requested' }}"
           echo "- Docker cleanup: Completed"
           echo "- Log rotation: Completed"
           echo "- Health checks: Completed"

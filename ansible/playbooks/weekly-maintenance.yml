@@ -8,6 +8,8 @@
     maintenance_log: "/var/log/mikrus-maintenance.log"
     max_log_size: "10M"
     log_retention_days: 30
+    target_alpine_version: "3.23"
+    auto_upgrade_alpine: true
 
   tasks:
     - name: Create maintenance log entry
@@ -17,6 +19,141 @@
         create: yes
         state: present
       tags: [maintenance]
+
+    # -------------------------
+    # Alpine Version Check
+    # -------------------------
+    - name: Get current Alpine version
+      ansible.builtin.shell: cat /etc/alpine-release
+      register: current_alpine_version
+      changed_when: false
+      tags: [system, version, check]
+
+    - name: Parse current Alpine version
+      ansible.builtin.set_fact:
+        current_version: "{{ current_alpine_version.stdout | regex_replace('^([0-9]+)\\.([0-9]+)\\.([0-9]+).*$', '\\1.\\2') }}"
+      tags: [system, version, check]
+
+    - name: Get latest stable Alpine version
+      ansible.builtin.uri:
+        url: "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/latest-releases.yaml"
+        method: GET
+      register: alpine_releases
+      failed_when: false
+      tags: [system, version, check]
+
+    - name: Parse latest stable version from API
+      ansible.builtin.set_fact:
+        latest_stable_version: "{{ alpine_releases.content | regex_search('version: ([0-9]+\\.[0-9]+)\\.[0-9]+', '\\1') | default(target_alpine_version) }}"
+      when: alpine_releases.status == 200
+      tags: [system, version, check]
+
+    - name: Fallback to target version if API fails
+      ansible.builtin.set_fact:
+        latest_stable_version: "{{ target_alpine_version }}"
+      when: alpine_releases.status != 200
+      tags: [system, version, check]
+
+    - name: Check if Alpine version upgrade is needed
+      ansible.builtin.set_fact:
+        alpine_upgrade_needed: "{{ current_version != latest_stable_version }}"
+      tags: [system, version, check]
+
+    - name: Log Alpine version status
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Alpine version check: {{ current_version }} (latest stable: {{ latest_stable_version }}) {{ alpine_upgrade_needed | ternary('UPGRADE NEEDED', 'UP TO DATE') }}"
+      tags: [maintenance, system, version]
+
+    - name: Display Alpine version information
+      ansible.builtin.debug:
+        msg: |
+          Alpine Version Status:
+          - Current: {{ current_version }}
+          - Latest stable: {{ latest_stable_version }}
+          - Upgrade needed: {{ alpine_upgrade_needed }}
+          - Auto-upgrade enabled: {{ auto_upgrade_alpine }}
+      tags: [system, version, check]
+
+    - name: Create backup directory for Alpine upgrade
+      ansible.builtin.file:
+        path: "/var/backups/alpine-upgrade-{{ ansible_date_time.iso8601 }}"
+        state: directory
+        mode: '0755'
+      when: alpine_upgrade_needed and auto_upgrade_alpine
+      tags: [system, version, upgrade]
+
+    - name: Backup package list before Alpine upgrade
+      ansible.builtin.shell: apk info | sort > /var/backups/alpine-upgrade-{{ ansible_date_time.iso8601 }}/packages-before.txt
+      when: alpine_upgrade_needed and auto_upgrade_alpine
+      tags: [system, version, upgrade]
+
+    - name: Update repositories to latest stable
+      ansible.builtin.lineinfile:
+        path: /etc/apk/repositories
+        regexp: '^#?http.*alpine.*v[0-9]+\.[0-9]+.*'
+        line: 'https://dl-cdn.alpinelinux.org/alpine/latest-stable/main'
+        backup: yes
+      when: alpine_upgrade_needed and auto_upgrade_alpine
+      register: repo_update
+      tags: [system, version, upgrade]
+
+    - name: Add community repository for latest stable
+      ansible.builtin.lineinfile:
+        path: /etc/apk/repositories
+        line: 'https://dl-cdn.alpinelinux.org/alpine/latest-stable/community'
+        create: yes
+      when: alpine_upgrade_needed and auto_upgrade_alpine and repo_update.changed
+      tags: [system, version, upgrade]
+
+    - name: Update package index with new repositories
+      community.general.apk:
+        update_cache: true
+      when: alpine_upgrade_needed and auto_upgrade_alpine
+      register: apk_update
+      tags: [system, version, upgrade]
+
+    - name: Upgrade apk package manager first
+      community.general.apk:
+        name:
+          - apk-tools
+        state: latest
+      when: alpine_upgrade_needed and auto_upgrade_alpine
+      register: apk_tools_upgrade
+      tags: [system, version, upgrade]
+
+    - name: Perform full Alpine system upgrade
+      community.general.apk:
+        upgrade: true
+      when: alpine_upgrade_needed and auto_upgrade_alpine
+      register: alpine_system_upgrade
+      tags: [system, version, upgrade]
+
+    - name: Log Alpine upgrade results
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - Alpine OS upgrade performed: {{ alpine_system_upgrade.changed | ternary('SUCCESS', 'NO CHANGES') }}"
+      when: alpine_upgrade_needed and auto_upgrade_alpine
+      tags: [maintenance, system, version]
+
+    - name: Reboot after Alpine upgrade
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+      when: alpine_upgrade_needed and auto_upgrade_alpine and (alpine_system_upgrade.changed or apk_tools_upgrade.changed)
+      tags: [system, version, upgrade]
+
+    - name: Wait for SSH after Alpine upgrade reboot
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+      when: alpine_upgrade_needed and auto_upgrade_alpine and (alpine_system_upgrade.changed or apk_tools_upgrade.changed)
+      tags: [system, version, upgrade]
+
+    - name: Alert about available Alpine upgrade
+      ansible.builtin.lineinfile:
+        path: "{{ maintenance_log }}"
+        line: "{{ ansible_date_time.iso8601 }} - ALERT: Alpine OS upgrade available ({{ current_version }} -> {{ latest_stable_version }}). Run with -e 'auto_upgrade_alpine=true' to upgrade."
+      when: alpine_upgrade_needed and not auto_upgrade_alpine
+      tags: [maintenance, system, alert]
 
     # -------------------------
     # System Updates

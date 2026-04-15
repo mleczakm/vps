@@ -75,6 +75,18 @@
           - Auto-upgrade enabled: {{ auto_upgrade_alpine }}
       tags: [system, version, check]
 
+    - name: Detect current Python interpreter path
+      ansible.builtin.shell: |
+        which python3 || which python3.10 || which python3.11 || which python3.12 || echo "/usr/bin/python3"
+      register: python_interpreter_path
+      changed_when: false
+      tags: [system, version, check]
+
+    - name: Set Python interpreter fact for current session
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: "{{ python_interpreter_path.stdout }}"
+      tags: [system, version, check]
+
     - name: Create backup directory for Alpine upgrade
       ansible.builtin.file:
         path: "/var/backups/alpine-upgrade-{{ ansible_date_time.iso8601 }}"
@@ -145,6 +157,38 @@
     - name: Wait for SSH after Alpine upgrade reboot
       ansible.builtin.wait_for_connection:
         timeout: 600
+      when: alpine_upgrade_needed and auto_upgrade_alpine and (alpine_system_upgrade.changed or apk_tools_upgrade.changed)
+      tags: [system, version, upgrade]
+
+    - name: Re-detect Python interpreter after upgrade
+      ansible.builtin.shell: |
+        which python3 || which python3.10 || which python3.11 || which python3.12 || echo "/usr/bin/python3"
+      register: new_python_interpreter_path
+      changed_when: false
+      when: alpine_upgrade_needed and auto_upgrade_alpine and (alpine_system_upgrade.changed or apk_tools_upgrade.changed)
+      tags: [system, version, upgrade]
+
+    - name: Update Python interpreter fact after upgrade
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: "{{ new_python_interpreter_path.stdout }}"
+      when: alpine_upgrade_needed and auto_upgrade_alpine and (alpine_system_upgrade.changed or apk_tools_upgrade.changed)
+      tags: [system, version, upgrade]
+
+    - name: Verify Python availability after upgrade
+      ansible.builtin.command: "{{ ansible_python_interpreter }} --version"
+      register: python_version_check
+      changed_when: false
+      failed_when: false
+      when: alpine_upgrade_needed and auto_upgrade_alpine and (alpine_system_upgrade.changed or apk_tools_upgrade.changed)
+      tags: [system, version, upgrade]
+
+    - name: Display Python status after upgrade
+      ansible.builtin.debug:
+        msg: |
+          Python interpreter after upgrade:
+          - Path: {{ ansible_python_interpreter }}
+          - Version: {{ python_version_check.stdout | default('Not available') }}
+          - Status: {{ python_version_check.rc == 0 | ternary('OK', 'ERROR') }}
       when: alpine_upgrade_needed and auto_upgrade_alpine and (alpine_system_upgrade.changed or apk_tools_upgrade.changed)
       tags: [system, version, upgrade]
 

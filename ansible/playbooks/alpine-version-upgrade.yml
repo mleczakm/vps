@@ -47,6 +47,16 @@
       ansible.builtin.shell: apk info | sort > {{ backup_dir }}/packages-before.txt
       when: backup_before_upgrade
 
+    - name: Detect current Python interpreter path
+      ansible.builtin.shell: |
+        which python3 || which python3.10 || which python3.11 || which python3.12 || echo "/usr/bin/python3"
+      register: python_interpreter_path
+      changed_when: false
+
+    - name: Set Python interpreter fact for current session
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: "{{ python_interpreter_path.stdout }}"
+
     - name: Backup critical system files
       ansible.builtin.archive:
         path:
@@ -148,10 +158,31 @@
         timeout: 600
       when: reboot_needed.stdout == "yes" or system_upgrade.changed
 
+    - name: Re-detect Python interpreter after upgrade
+      ansible.builtin.shell: |
+        which python3 || which python3.10 || which python3.11 || which python3.12 || echo "/usr/bin/python3"
+      register: new_python_interpreter_path
+      changed_when: false
+      when: reboot_needed.stdout == "yes" or system_upgrade.changed
+
+    - name: Update Python interpreter fact after upgrade
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: "{{ new_python_interpreter_path.stdout }}"
+      when: reboot_needed.stdout == "yes" or system_upgrade.changed
+
+    - name: Verify Python availability after upgrade
+      ansible.builtin.command: "{{ ansible_python_interpreter }} --version"
+      register: python_version_check
+      changed_when: false
+      failed_when: false
+      when: reboot_needed.stdout == "yes" or system_upgrade.changed
+
     - name: Verify system after reboot
       ansible.builtin.shell: |
         echo "=== System Status ==="
         cat /etc/alpine-release
+        echo "=== Python Status ==="
+        {{ ansible_python_interpreter }} --version 2>/dev/null || echo "Python not available"
         echo "=== Docker Status ==="
         docker info 2>/dev/null || echo "Docker not running"
         echo "=== Container Status ==="

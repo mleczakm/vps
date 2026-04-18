@@ -156,7 +156,90 @@
     - name: Wait for SSH after reboot
       ansible.builtin.wait_for_connection:
         timeout: 600
+        delay: 30
       when: reboot_needed.stdout == "yes" or system_upgrade.changed
+
+    - name: Fix PAM configuration after Alpine upgrade
+      block:
+        - name: Backup PAM configuration
+          ansible.builtin.archive:
+            path: /etc/pam.d
+            dest: "/etc/pam.d.backup.{{ ansible_date_time.epoch }}.tar.gz"
+            format: gz
+          when: ansible_os_family == "Alpine"
+
+        - name: Create PAM sshd configuration
+          ansible.builtin.copy:
+            dest: /etc/pam.d/sshd
+            content: |
+              #%PAM-1.0
+              auth       required     pam_unix.so
+              account    required     pam_unix.so
+              password   required     pam_unix.so
+              session    required     pam_unix.so
+            mode: '0644'
+          when: ansible_os_family == "Alpine"
+
+        - name: Create PAM base-auth configuration
+          ansible.builtin.copy:
+            dest: /etc/pam.d/base-auth
+            content: |
+              #%PAM-1.0
+              auth       required     pam_unix.so nullok
+              account    required     pam_unix.so
+              password   required     pam_unix.so
+              session    required     pam_unix.so
+            mode: '0644'
+          when: ansible_os_family == "Alpine"
+
+        - name: Create PAM base-account configuration
+          ansible.builtin.copy:
+            dest: /etc/pam.d/base-account
+            content: |
+              #%PAM-1.0
+              account    required     pam_unix.so
+            mode: '0644'
+          when: ansible_os_family == "Alpine"
+
+        - name: Create PAM base-password configuration
+          ansible.builtin.copy:
+            dest: /etc/pam.d/base-password
+            content: |
+              #%PAM-1.0
+              password   required     pam_unix.so
+            mode: '0644'
+          when: ansible_os_family == "Alpine"
+
+        - name: Create PAM base-session configuration
+          ansible.builtin.copy:
+            dest: /etc/pam.d/base-session
+            content: |
+              #%PAM-1.0
+              session    required     pam_unix.so
+            mode: '0644'
+          when: ansible_os_family == "Alpine"
+
+        - name: Set correct permissions for PAM files
+          ansible.builtin.file:
+            path: /etc/pam.d
+            mode: '0644'
+            recurse: true
+          when: ansible_os_family == "Alpine"
+
+        - name: Verify SSH configuration syntax
+          ansible.builtin.command: sshd -t
+          register: ssh_config_check
+          changed_when: false
+          failed_when: false
+
+        - name: Log PAM fix completion
+          ansible.builtin.lineinfile:
+            path: "{{ maintenance_log }}"
+            line: "{{ ansible_date_time.iso8601 }} - PAM configuration fixed after Alpine upgrade"
+          when: ansible_os_family == "Alpine"
+
+      when: reboot_needed.stdout == "yes" or system_upgrade.changed
+      tags: [pam]
 
     - name: Re-detect Python interpreter after upgrade
       ansible.builtin.shell: |
@@ -175,6 +258,13 @@
       register: python_version_check
       changed_when: false
       failed_when: false
+      when: reboot_needed.stdout == "yes" or system_upgrade.changed
+
+    - name: Verify SSH service after PAM fix
+      ansible.builtin.service:
+        name: sshd
+        state: started
+      register: ssh_final_status
       when: reboot_needed.stdout == "yes" or system_upgrade.changed
 
     - name: Verify system after reboot

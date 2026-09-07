@@ -36,3 +36,10 @@ egib_parser_name: egib-parser
 egib_parser_image: egib-parser:latest
 egib_parser_network: egib-net
 egib_parser_src_dir: /opt/apps/services/egib-parser
+
+# exo-runner (Exchange Online offboarding actions, called by the n8n offboarding workflow)
+exo_runner_name: exo-runner
+exo_runner_image: exo-runner:latest
+exo_runner_network: egib-net
+exo_runner_src_dir: /opt/apps/services/exo-runner
+exo_runner_cert_dir: /var/lib/exo-runner

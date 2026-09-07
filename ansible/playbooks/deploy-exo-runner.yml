@@ -1,0 +1,100 @@
+---
+- name: Deploy exo-runner microservice
+  hosts: mikrus
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+
+  pre_tasks:
+    - name: Validate required exo-runner deployment variables
+      ansible.builtin.assert:
+        that:
+          - exo_runner_api_key is defined and exo_runner_api_key | length > 0
+          - exo_app_id is defined and exo_app_id | length > 0
+          - exo_organization is defined and exo_organization | length > 0
+          - exo_cert_pfx_base64 is defined and exo_cert_pfx_base64 | length > 0
+        fail_msg: Required exo-runner variables are missing.
+
+  tasks:
+    - name: Ensure exo-runner source directory exists
+      ansible.builtin.file:
+        path: "{{ exo_runner_src_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy exo-runner service source
+      ansible.builtin.copy:
+        src: ../../services/exo-runner/
+        dest: "{{ exo_runner_src_dir }}/"
+        mode: "0644"
+
+    - name: Ensure exo-runner certificate directory exists
+      ansible.builtin.file:
+        path: "{{ exo_runner_cert_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Write app-only PFX certificate
+      ansible.builtin.shell:
+        cmd: "set -o pipefail && printf '%s' '{{ exo_cert_pfx_base64 }}' | base64 -d > '{{ exo_runner_cert_dir }}/exo-runner.pfx'"
+        executable: /bin/bash
+      no_log: true
+      changed_when: true
+
+    - name: Lock down the PFX certificate
+      ansible.builtin.file:
+        path: "{{ exo_runner_cert_dir }}/exo-runner.pfx"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Build the exo-runner image
+      community.docker.docker_image:
+        name: "{{ exo_runner_image }}"
+        build:
+          path: "{{ exo_runner_src_dir }}"
+        source: build
+        force_source: true
+
+    - name: Ensure the internal network exists
+      community.docker.docker_network:
+        name: "{{ exo_runner_network }}"
+        state: present
+
+    - name: Run exo-runner container
+      community.docker.docker_container:
+        name: "{{ exo_runner_name }}"
+        image: "{{ exo_runner_image }}"
+        state: started
+        restart_policy: always
+        recreate: true
+        networks:
+          - name: "{{ exo_runner_network }}"
+        volumes:
+          - "{{ exo_runner_cert_dir }}:/certs:ro"
+        env:
+          EXO_RUNNER_API_KEY: "{{ exo_runner_api_key }}"
+          EXO_APP_ID: "{{ exo_app_id }}"
+          EXO_ORGANIZATION: "{{ exo_organization }}"
+          EXO_CERT_PATH: "/certs/exo-runner.pfx"
+          EXO_CERT_PASSWORD: "{{ exo_cert_password | default('') }}"
+      no_log: true
+
+    - name: Wait for exo-runner health endpoint
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ exo_runner_name }}"
+          - pwsh
+          - -NoProfile
+          - -Command
+          - "try { if ((Invoke-WebRequest -UseBasicParsing http://localhost:8080/health).StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
+      register: exo_runner_health
+      retries: 30
+      delay: 4
+      until: exo_runner_health.rc == 0
+      changed_when: false
